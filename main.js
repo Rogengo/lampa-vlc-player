@@ -1,8 +1,9 @@
 /**
  * VLC Opener для Lampa
- * - Кнопка [VLC] в ряду .torrent-filter
- * - Клик перехватывается на уровне document в capture-фазе —
- *   Lampa не успевает навесить свои hover-обработчики.
+ * - Кнопка [VLC] вставляется сразу после [m3u Download]
+ * - Внутри кнопки — скрытый <input type="checkbox">.
+ *   Браузер сам переключает его при клике, поэтому никакие
+ *   Lampa-обработчики (hover:enter и т.п.) не мешают.
  * - Состояние хранится в Lampa.Storage между сессиями.
  */
 (function () {
@@ -13,7 +14,6 @@
     var STORAGE_KEY = 'vlc_opener_enabled';
     var POLL_INTERVAL = 400;
     var pollTimer = null;
-    var lastToggleTime = 0;
 
     function log() {
         var a = Array.prototype.slice.call(arguments);
@@ -48,29 +48,46 @@
 
     // ================== КНОПКА ==================
     function createToggle() {
-        // selector нужен ТОЛЬКО для CSS-отображения. Все события
-        // перехватываются на document, поэтому Lampa-обработчики не помешают.
+        var checked = Lampa.Storage.get(STORAGE_KEY, false) ? 'checked' : '';
+
+        // Нативный чекбокс спрятан, но переключается браузером при клике по <label>.
+        // Никакие Lampa-обработчики (hover:enter, keydown и пр.) на него не влияют.
         var $btn = $(
-            '<div class="simple-button simple-button--filter selector vlc-toggle" ' +
-                 'style="cursor:pointer;">' +
+            '<label class="simple-button simple-button--filter selector vlc-toggle" ' +
+                    'style="cursor:pointer;position:relative;">' +
+                '<input type="checkbox" class="vlc-toggle-input" ' + checked + ' ' +
+                       'style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;">' +
                 '<span class="vlc-toggle-icon" ' +
                       'style="display:inline-flex;align-items:center;margin-right:.4em;">' +
                 '</span>' +
                 '<span>VLC</span>' +
-            '</div>'
+            '</label>'
         );
+
         updateVisual($btn);
+
+        // Слушаем только 'change' — его генерирует сам браузер.
+        // Никакие Lampa hover-обработчики сюда не долетают.
+        $btn.find('.vlc-toggle-input').on('change', function () {
+            var on = this.checked;
+            Lampa.Storage.set(STORAGE_KEY, on);
+            updateVisual($btn);
+            log('VLC:', on ? 'ВКЛ' : 'ВЫКЛ');
+            notify('VLC: ' + (on ? 'ВКЛ' : 'ВЫКЛ'));
+        });
+
         return $btn;
     }
 
     function removeToggle() { $('.vlc-toggle').remove(); }
 
     function addToggle() {
-        var $c = $('.torrent-filter');
-        if (!$c.length) return false;
-        if ($c.find('.vlc-toggle').length) return true;
-        $c.append(createToggle());
-        log('Кнопка VLC добавлена');
+        if ($('.vlc-toggle').length) return true;
+        // Вставляем строго после m3u Download — гарантированно в тот же ряд
+        var $m3u = $('.m3u-btn');
+        if (!$m3u.length) return false;
+        $m3u.after(createToggle());
+        log('Кнопка VLC добавлена после m3u-btn');
         return true;
     }
 
@@ -81,59 +98,6 @@
     }
     function stopPolling() {
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    }
-
-    // ================== ГЛОБАЛЬНЫЙ ПЕРЕХВАТ КЛИКА ==================
-    // Слушаем pointerdown в capture-фазе на document.
-    // Это срабатывает РАНЬШЕ, чем любые обработчики на самой кнопке,
-    // включая все hover:enter от HoverSwitcher в Lampa.
-    function installClickInterceptor() {
-        document.addEventListener('pointerdown', function (e) {
-            var t = e.target;
-            if (!t || !t.closest) return;
-            var toggle = t.closest('.vlc-toggle');
-            if (!toggle) return;
-
-            // Это клик по нашей кнопке — перехватываем ДО Lampa
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            e.stopPropagation();
-
-            var now = Date.now();
-            if (now - lastToggleTime < 500) {
-                log('Повтор отсечён');
-                return;
-            }
-            lastToggleTime = now;
-
-            var next = !Lampa.Storage.get(STORAGE_KEY, false);
-            Lampa.Storage.set(STORAGE_KEY, next);
-
-            // Обновить визуал всех toggle на странице
-            $('.vlc-toggle').each(function () { updateVisual($(this)); });
-
-            log('VLC:', next ? 'ВКЛ' : 'ВЫКЛ');
-            notify('VLC: ' + (next ? 'ВКЛ' : 'ВЫКЛ'));
-        }, true); // ← capture phase
-
-        // Дополнительно глушим click/mouseup на кнопке, если pointerdown
-        // по какой-то причине не сработал (старые браузеры)
-        document.addEventListener('mousedown', function (e) {
-            var t = e.target;
-            if (!t || !t.closest) return;
-            if (!t.closest('.vlc-toggle')) return;
-            e.stopImmediatePropagation();
-        }, true);
-
-        document.addEventListener('click', function (e) {
-            var t = e.target;
-            if (!t || !t.closest) return;
-            if (!t.closest('.vlc-toggle')) return;
-            e.stopImmediatePropagation();
-            e.preventDefault();
-        }, true);
-
-        log('Глобальный перехватчик клика установлен');
     }
 
     // ================== ХУК НА PLAYER ==================
@@ -171,7 +135,6 @@
 
     function init() {
         log('Плагин инициализирован');
-        installClickInterceptor();
         installHook();
         Lampa.Listener.follow('activity', onActivity);
     }
